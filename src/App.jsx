@@ -6,12 +6,11 @@ import useKChirp from './hooks/useKChirp';
 
 export default function App() {
 const [acceptedTerms, setAcceptedTerms] = useState(false);
-const [currentTab, setCurrentTab] = useState('terminal'); // 'terminal', 'agenda', 'radio'
-const [activeCall, setActiveCall] = useState(null); // Armazena dados se houver chamada ativa
+const [currentTab, setCurrentTab] = useState('terminal'); 
+const [activeCall, setActiveCall] = useState(null); 
 const [userKey, setUserKey] = useState('');
-const [targetKey, setTargetKey] = useState(''); // Estado para o endereço de destino
+const [targetKey, setTargetKey] = useState(''); 
 
-// Simula a geração do SHA-256 do hardware no primeiro acesso
 useEffect(() => {
 const terms = localStorage.getItem('kchirp_terms_accepted');
 if (terms === 'true') {
@@ -28,10 +27,15 @@ localStorage.setItem('kchirp_device_key', savedKey);
 setUserKey(savedKey);
 }, []);
 
-// Inicializa o nosso hook de P2P WebRTC conectando ao endereço local
-const { connectionState, makeCall, answerCall, disconnect, incomingCall  } = useKChirp(userKey);
+const { 
+  connectionState, 
+  startCall,     
+  answerCall, 
+  cleanup,       
+  incomingCall 
+} = useKChirp(userKey);
 
-// Monitora o estado da conexão para ajustar a navegação de forma reativa
+
 useEffect(() => {
 if (connectionState === 'CONNECTED' && currentTab !== 'radio') {
 setCurrentTab('radio');
@@ -41,7 +45,6 @@ setCurrentTab('terminal');
 }
 }, [connectionState, currentTab]);
 
-// LOGICA DE RECEPÇÃO: Escuta sinais de chamada e valida contra a agenda local
 useEffect(() => {
   if (incomingCall && connectionState === 'DISCONNECTED') {
     // 1. Recuperar agenda local para verificação de segurança (P2P White-list)
@@ -68,18 +71,22 @@ localStorage.setItem('kchirp_terms_accepted', 'true');
 setAcceptedTerms(true);
 };
 
-const handleStartCall = async (targetKey) => {
-setActiveCall({ target: targetKey, type: 'outgoing' });
-setCurrentTab('radio');
-try {
-// Dispara a oferta WebRTC. Em produção, isso seria enviado via fetch para api/signal.js
-await makeCall(targetKey, (incomingMessage) => {
-console.log("Mensagem de texto P2P recebida no canal de dados:", incomingMessage);
-});
-} catch (err) {
-console.error("Erro ao iniciar chamada:", err);
-handleDisconnect();
-}
+const handleStartCall = async (target) => {
+  try {
+    if (typeof playNextelChirp === 'function') playNextelChirp();
+    
+    await startCall(target); 
+    
+    setCurrentTab('radio');
+    
+    setActiveCall({
+      type: 'outgoing',
+      targetKey: target,
+      startTime: Date.now()
+    });
+  } catch (err) {
+    console.error("Erro ao iniciar chamada:", err);
+  }
 };
 
 const handleDisconnect = () => {
@@ -157,8 +164,8 @@ return (
 {currentTab === 'agenda' && (
   <Agenda 
     onSelectContact={(key) => {
-      setTargetKey(key);          // Define a chave do destino globalmente
-      handleStartCall(key);       // Dispara a chamada WebRTC automaticamente
+      setTargetKey(key);          
+      handleStartCall(key);       
     }} 
   />
 )}
