@@ -56,11 +56,13 @@ export default function useKChirp(userKey) {
 
         // Se houver um 'call' vindo especificamente desse contato no túnel secreto
         if (data.sdp && data.action === 'incoming' && data.senderKey === contact.key) {
+          console.log('[P2P] Chamada detectada! Candidates recebidos:', data.candidates?.length || 0);
           setIncomingCall({
             senderKey: contact.key,
             senderName: contact.name,
             sdp: data.sdp,
-            tunnelId: tunnelId
+            tunnelId: tunnelId,
+            candidates: data.candidates || []
           });
           break; // Para na primeira chamada encontrada
         }
@@ -84,7 +86,7 @@ export default function useKChirp(userKey) {
     
     // IMPORTANTE: Definir ondatachannel ANTES de qualquer operação
     pc.ondatachannel = (event) => {
-      console.log('[WebRTC] DataChannel recebido:', event.channel.label);
+      console.log('[WebRTC] DataChannel recebido:', event.channel.label, 'readyState:', event.channel.readyState);
       setupDataChannel(event.channel);
     };
     
@@ -92,24 +94,69 @@ export default function useKChirp(userKey) {
       console.log('[WebRTC] Track recebido:', e.track.kind);
       setRemoteStream(e.streams[0]);
     };
+    
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('[ICE] Candidate gerado:', event.candidate.candidate.substring(0, 50) + '...');
-        // TODO: Enviar candidate para o servidor se implementado
+        // Enviar candidate para o servidor
+        const candidateData = {
+          candidate: event.candidate.candidate,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          sdpMid: event.candidate.sdpMid
+        };
+        
+        // Guardar tunnel ID para poder enviar candidates depois
+        if (peerConnection.current && peerConnection.current.__tunnelId) {
+          fetch('/api/signal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'candidate',
+              senderKey: peerConnection.current.__userKey,
+              targetKey: peerConnection.current.__tunnelId,
+              candidate: candidateData.candidate,
+              sdpMLineIndex: candidateData.sdpMLineIndex
+            })
+          }).catch(err => console.warn('[ICE] Erro ao enviar candidate:', err.message.substring(0, 50)));
+        }
+      } else {
+        console.log('[ICE] Coleta de candidates completa');
       }
     };
+    
     pc.onicecandidateerror = (event) => {
-      console.error('[ICE Error]:', event.errorText);
+      console.warn('[ICE Error]:', event.errorText, '- Tentando fallback...');
     };
+    
     pc.oniceconnectionstatechange = () => {
-      console.log('[ICE State]:', pc.iceConnectionState);
+      console.log('[ICE State]:', pc.iceConnectionState, '| DataChannel State:', pc.connectionState);
+      
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        console.log('[CONNECTION] Conexão ICE estabelecida!');
         setConnectionState('CONNECTED');
+        
+        // WORKAROUND: Forçar abertura de DataChannel após ICE "connected"
+        setTimeout(() => {
+          const dcRef = dataChannelRef.current;
+          if (dcRef && dcRef.readyState !== 'open') {
+            console.log('[DataChannel] Forçando onopen via fallback. Estado atual:', dcRef.readyState);
+            if (dcRef.readyState === 'connecting' || dcRef.readyState === 'open') {
+              // Disparar evento manualmente se não foi disparado
+              if (!dcRef.__onOpenFired) {
+                dcRef.__onOpenFired = true;
+                console.log('[DataChannel] Fallback onopen executado');
+                setDataChannel(dcRef);
+              }
+            }
+          }
+        }, 1000);
       }
+      
       if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        console.error('[ICE] Conexão falhou:', pc.iceConnectionState);
         cleanup();
       }
     };
+    
     peerConnection.current = pc;
     return pc;
   };
@@ -127,10 +174,14 @@ export default function useKChirp(userKey) {
       localStream.current = stream;
 
       const pc = createPeerConnection(targetKey);
+      // Guardar tunnelId e userKey para envio de candidates
+      pc.__tunnelId = tunnelId;
+      pc.__userKey = userKey;
+      
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
       console.log('[WebRTC] Tracks adicionados ao peer connection');
 
-      const dc = pc.createDataChannel("kchirp-chat");
+      const dc = pc.createDataChannel("kchirp-chat", { ordered: true });
       setupDataChannel(dc);
       console.log('[DataChannel] Canal de dados criado');
 
@@ -159,8 +210,21 @@ export default function useKChirp(userKey) {
         if (data.action === 'connected' && data.sdp) {
           console.log('[K-CHIRP] Resposta recebida! Conectando ao peer...');
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          clearInterval(answerWait);
           console.log('[WebRTC] Descrição remota definida');
+          
+          // Aplicar ICE candidates recebidos
+          if (data.candidates && data.candidates.length > 0) {
+            console.log('[ICE] Aplicando', data.candidates.length, 'candidates do receptor');
+            for (const cand of data.candidates) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (err) {
+                console.warn('[ICE] Erro ao aplicar candidate:', err.message.substring(0, 50));
+              }
+            }
+          }
+          
+          clearInterval(answerWait);
         }
       }, 2000);
 
@@ -181,11 +245,27 @@ export default function useKChirp(userKey) {
       localStream.current = stream;
 
       const pc = createPeerConnection(incomingCall.senderKey);
+      // Guardar tunnelId e userKey para envio de candidates
+      pc.__tunnelId = incomingCall.tunnelId;
+      pc.__userKey = userKey;
+      
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
       console.log('[WebRTC] Tracks adicionados ao peer connection');
 
       console.log('[WebRTC] Definindo descrição remota da oferta recebida');
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.sdp));
+      
+      // Aplicar ICE candidates da oferta
+      if (incomingCall.candidates && incomingCall.candidates.length > 0) {
+        console.log('[ICE] Aplicando', incomingCall.candidates.length, 'candidates do chamador');
+        for (const cand of incomingCall.candidates) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
+          } catch (err) {
+            console.warn('[ICE] Erro ao aplicar candidate:', err.message.substring(0, 50));
+          }
+        }
+      }
       
       const answer = await pc.createAnswer();
       console.log('[WebRTC] Resposta criada');
@@ -217,9 +297,16 @@ export default function useKChirp(userKey) {
     // Guardar referência IMEDIATAMENTE
     dataChannelRef.current = dc;
     
-    dc.onopen = () => {
-      console.log('[DataChannel] Canal ABERTO! readyState:', dc.readyState);
+    // Se já estiver open, disparar manualmente
+    if (dc.readyState === 'open') {
+      console.log('[DataChannel] Canal já OPEN! Atualizando state...');
       setDataChannel(dc);
+    }
+    
+    dc.onopen = () => {
+      console.log('[DataChannel] evento ONOPEN disparado! readyState:', dc.readyState);
+      setDataChannel(dc);
+      dc.__onOpenFired = true;
     };
     
     dc.onclose = () => {
@@ -235,11 +322,14 @@ export default function useKChirp(userKey) {
       console.log('[DataChannel] Mensagem recebida:', e.data);
     };
     
-    // Se já estiver open, disparar manualmente
-    if (dc.readyState === 'open') {
-      console.log('[DataChannel] Canal já está OPEN! Atualizando state...');
-      setDataChannel(dc);
-    }
+    // WORKAROUND: Se não disparar onopen em 3 segundos, forçar manualmente
+    setTimeout(() => {
+      if (!dc.__onOpenFired && (dc.readyState === 'open' || dc.readyState === 'connecting')) {
+        console.log('[DataChannel] Forçando onopen (não disparou). readyState:', dc.readyState);
+        dc.__onOpenFired = true;
+        setDataChannel(dc);
+      }
+    }, 3000);
   };
 
   const cleanup = () => {

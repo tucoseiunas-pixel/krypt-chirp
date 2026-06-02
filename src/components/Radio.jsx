@@ -132,28 +132,37 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
         }
       } else {
         console.warn('[DataChannel] Canal não está aberto. Estado:', dc.readyState);
+        console.log('[DataChannel] Iniciando retry automático a cada 300ms...');
         
-        // Retry automático a cada 500ms por até 5 segundos
+        // Retry com backoff exponencial
         let retries = 0;
         const retryInterval = setInterval(() => {
+          if (sent) {
+            clearInterval(retryInterval);
+            return;
+          }
+          
+          console.log('[DataChannel] Tentativa #' + (retries + 1), 'readyState:', dc.readyState);
+          
           if (dc.readyState === 'open' && !sent) {
             try {
               dc.send(msgText);
-              console.log('[DataChannel] Mensagem reenviada com sucesso (retry #' + retries + ')');
+              console.log('[DataChannel] Mensagem enviada (retry #' + retries + ')');
               sent = true;
               clearInterval(retryInterval);
             } catch (err) {
               console.error('[DataChannel] Erro no retry:', err);
             }
           }
+          
           retries++;
-          if (retries > 10) { // 10 * 500ms = 5s
+          
+          // Continuar tentando indefinidamente, mas log reduzido após 20 tentativas
+          if (retries > 100) { // ~30 segundos
+            console.error('[DataChannel] Falha - canal não abriu após 100 tentativas. readyState final:', dc.readyState);
             clearInterval(retryInterval);
-            if (!sent) {
-              console.warn('[DataChannel] Falha permanente - canal não abriu a tempo');
-            }
           }
-        }, 500);
+        }, 300);
       }
     } else {
       console.warn('[Radio] DataChannel é null/undefined');
@@ -223,6 +232,19 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
         >
           <Power className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* Status do DataChannel */}
+      <div className="border border-acidGreen/50 bg-acidGreen/10 p-2 rounded text-[10px] text-acidGreen">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${(dataChannel?.readyState === 'open' || dataChannelRef?.current?.readyState === 'open') ? 'bg-acidGreen animate-pulse' : 'bg-radioactiveOrange animate-pulse'}`} />
+          <span className="font-mono">
+            {(dataChannel?.readyState === 'open' || dataChannelRef?.current?.readyState === 'open') 
+              ? '✓ TEXTO OK'
+              : `⏳ TEXTO (${(dataChannelRef?.current?.readyState || 'aguardando')})`
+            }
+          </span>
+        </div>
       </div>
 
       {/* Barra de Tempo de Linha (90 segundos de limite) */}

@@ -17,13 +17,17 @@ export default async function handler(req, res) {
   const { method } = req;
 
   if (method === 'POST') {
-    const { action, senderKey, targetKey, sdp } = req.body;
+    const { action, senderKey, targetKey, sdp, candidate, sdpMLineIndex } = req.body;
 
     // Ação 1: Registrar Oferta (Quem está ligando)
     if (action === 'call') {
       activeHandshakes[targetKey] = {
         sender: senderKey,
         offer: sdp,
+        candidates: {
+          sender: [],
+          receiver: []
+        },
         timestamp: Date.now()
       };
       return res.status(200).json({ success: true, message: "Chamado registrado. Aguardando destinatário." });
@@ -36,6 +40,25 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       }
       return res.status(404).json({ error: "Chamado expirado ou não encontrado." });
+    }
+
+    // Ação 3: Registrar ICE Candidate
+    if (action === 'candidate') {
+      if (activeHandshakes[targetKey]) {
+        // Determinar se é sender ou receiver baseado no senderKey
+        const isOriginalSender = activeHandshakes[targetKey].sender === senderKey;
+        const candidateRole = isOriginalSender ? 'sender' : 'receiver';
+        
+        activeHandshakes[targetKey].candidates[candidateRole].push({
+          candidate: candidate,
+          sdpMLineIndex: sdpMLineIndex,
+          timestamp: Date.now()
+        });
+        
+        console.log(`[ICE] Candidate registrado para ${candidateRole} no túnel ${targetKey.substring(0, 8)}...`);
+        return res.status(200).json({ success: true });
+      }
+      return res.status(404).json({ error: "Túnel não encontrado para candidate." });
     }
   }
 
@@ -56,14 +79,24 @@ export default async function handler(req, res) {
       
       // Se há resposta (answer), entregamos de volta ao chamador e destruímos o rastro
       if (data.answer) {
-        const response = { sdp: data.answer, action: 'connected' };
+        // Entregar resposta + ICE candidates do receptor
+        const response = { 
+          sdp: data.answer, 
+          action: 'connected',
+          candidates: data.candidates.receiver || []  // Sender recebe candidates do receiver
+        };
         delete activeHandshakes[userKey]; // Destruição instantânea do rastro
         return res.status(200).json(response);
       }
 
       // Se há apenas uma oferta de chamada recebida (sem resposta ainda)
       if (!data.answer) {
-        return res.status(200).json({ sdp: data.offer, action: 'incoming', senderKey: data.sender });
+        return res.status(200).json({ 
+          sdp: data.offer, 
+          action: 'incoming', 
+          senderKey: data.sender,
+          candidates: data.candidates.sender || []  // Receiver recebe candidates do sender
+        });
       }
     }
 
