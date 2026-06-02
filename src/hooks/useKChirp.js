@@ -68,10 +68,27 @@ export default function useKChirp(userKey) {
 
   const createPeerConnection = (targetKey) => {
     const pc = new RTCPeerConnection(rtcConfig);
-    pc.ontrack = (e) => setRemoteStream(e.streams[0]);
+    pc.ontrack = (e) => {
+      console.log('[WebRTC] Track recebido:', e.track.kind);
+      setRemoteStream(e.streams[0]);
+    };
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('[ICE] Candidate gerado:', event.candidate.candidate.substring(0, 50) + '...');
+        // TODO: Enviar candidate para o servidor se implementado
+      }
+    };
+    pc.onicecandidateerror = (event) => {
+      console.error('[ICE Error]:', event.errorText);
+    };
     pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'connected') setConnectionState('CONNECTED');
-      if (pc.iceConnectionState === 'disconnected') cleanup();
+      console.log('[ICE State]:', pc.iceConnectionState);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setConnectionState('CONNECTED');
+      }
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        cleanup();
+      }
     };
     peerConnection.current = pc;
     return pc;
@@ -80,20 +97,27 @@ export default function useKChirp(userKey) {
   // DISCAR (Enviar sinal para o Túnel)
   const startCall = async (targetKey) => {
     try {
+      console.log('[K-CHIRP] Iniciando chamada para:', targetKey);
       setConnectionState('CONNECTING');
       const tunnelId = await getTunnelId(userKey, targetKey);
+      console.log('[K-CHIRP] Túnel ID calculado:', tunnelId);
       
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('[Media] Áudio local capturado:', stream.getTracks().length, 'tracks');
       localStream.current = stream;
 
       const pc = createPeerConnection(targetKey);
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      console.log('[WebRTC] Tracks adicionados ao peer connection');
 
       const dc = pc.createDataChannel("kchirp-chat");
       setupDataChannel(dc);
+      console.log('[DataChannel] Canal de dados criado');
 
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      console.log('[WebRTC] Oferta criada');
       await pc.setLocalDescription(offer);
+      console.log('[WebRTC] Descrição local definida');
 
       // Publica a oferta no endereço do túnel
       await fetch('/api/signal', {
@@ -106,14 +130,17 @@ export default function useKChirp(userKey) {
           sdp: pc.localDescription
         })
       });
+      console.log('[K-CHIRP] Oferta enviada para o servidor');
 
       // Polling de resposta no túnel
       const answerWait = setInterval(async () => {
         const res = await fetch(`/api/signal?userKey=${tunnelId}`);
         const data = await res.json();
         if (data.action === 'connected' && data.sdp) {
+          console.log('[K-CHIRP] Resposta recebida! Conectando ao peer...');
           await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
           clearInterval(answerWait);
+          console.log('[WebRTC] Descrição remota definida');
         }
       }, 2000);
 
@@ -127,17 +154,27 @@ export default function useKChirp(userKey) {
   const acceptCall = async () => {
     if (!incomingCall) return;
     try {
+      console.log('[K-CHIRP] Aceitando chamada de:', incomingCall.senderKey);
       setConnectionState('CONNECTING');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('[Media] Áudio local capturado');
       localStream.current = stream;
 
       const pc = createPeerConnection(incomingCall.senderKey);
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
-      pc.ondatachannel = (e) => setupDataChannel(e.channel);
+      pc.ondatachannel = (e) => {
+        console.log('[DataChannel] Canal de dados recebido');
+        setupDataChannel(e.channel);
+      };
+      console.log('[WebRTC] Tracks adicionados ao peer connection');
 
+      console.log('[WebRTC] Definindo descrição remota da oferta recebida');
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.sdp));
+      
       const answer = await pc.createAnswer();
+      console.log('[WebRTC] Resposta criada');
       await pc.setLocalDescription(answer);
+      console.log('[WebRTC] Descrição local definida');
 
       // Envia resposta para o túnel
       await fetch('/api/signal', {
@@ -149,16 +186,37 @@ export default function useKChirp(userKey) {
           sdp: pc.localDescription
         })
       });
+      console.log('[K-CHIRP] Resposta enviada para o servidor');
 
       setIncomingCall(null);
     } catch (err) {
+      console.error('[K-CHIRP] Erro ao aceitar chamada:', err);
       cleanup();
     }
   };
 
   const setupDataChannel = (dc) => {
-    dc.onmessage = (e) => setDataChannel(e.data);
-    dc.onopen = () => setDataChannel(dc);
+    console.log('[DataChannel] Configurando canal:', dc.label);
+    
+    dc.onopen = () => {
+      console.log('[DataChannel] Canal aberto!');
+      setDataChannel(dc);
+    };
+    
+    dc.onclose = () => {
+      console.log('[DataChannel] Canal fechado');
+      setDataChannel(null);
+    };
+    
+    dc.onerror = (error) => {
+      console.error('[DataChannel Error]:', error);
+    };
+    
+    dc.onmessage = (e) => {
+      console.log('[DataChannel] Mensagem recebida:', e.data);
+      // Aqui você pode processar mensagens recebidas se necessário
+    };
+    
     dataChannelRef.current = dc;
   };
 
@@ -174,6 +232,8 @@ export default function useKChirp(userKey) {
   return {
     connectionState,
     remoteStream,
+    localStream: localStream.current,
+    dataChannel,
     incomingCall,
     startCall,
     acceptCall,

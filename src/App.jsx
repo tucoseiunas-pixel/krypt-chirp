@@ -32,7 +32,9 @@ const {
   startCall,     
   acceptCall, 
   cleanup,       
-  incomingCall 
+  incomingCall,
+  remoteStream,
+  dataChannel
 } = useKChirp(userKey);
 
 
@@ -170,7 +172,9 @@ return (
       {currentTab === 'radio' && (
         <Radio 
           activeCall={activeCall} 
-          onDisconnect={handleDisconnect} 
+          onDisconnect={handleDisconnect}
+          remoteStream={remoteStream}
+          dataChannel={dataChannel}
         />
       )}
     </main>

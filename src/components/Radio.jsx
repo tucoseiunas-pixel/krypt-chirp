@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Radio as RadioIcon, Mic, MicOff, MessageSquare, Send, Power } from 'lucide-react';
 
-export default function Radio({ activeCall, onDisconnect }) {
+export default function Radio({ activeCall, onDisconnect, remoteStream, dataChannel }) {
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [timeLeft, setTimeLeft] = useState(90); // Limite de 90 segundos de chamada
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef(null);
+  const audioRef = useRef(null);
 
   // Sintetizador para simular o Chirp clássico do Nextel via Web Audio API
   const playNextelChirp = () => {
@@ -39,6 +40,15 @@ export default function Radio({ activeCall, onDisconnect }) {
     }
   };
 
+  // Reproduzir áudio remoto quando receber stream
+  useEffect(() => {
+    if (remoteStream && audioRef.current) {
+      console.log('[Radio] Conectando remoteStream ao elemento audio');
+      audioRef.current.srcObject = remoteStream;
+      audioRef.current.play().catch(err => console.error('[Audio] Erro ao reproduzir:', err));
+    }
+  }, [remoteStream]);
+
   // Efeito para tocar o Chirp no início da chamada (se for saída ou entrada)
   useEffect(() => {
     playNextelChirp();
@@ -64,15 +74,63 @@ export default function Radio({ activeCall, onDisconnect }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Escutar mensagens recebidas pelo DataChannel
+  useEffect(() => {
+    if (!dataChannel) return;
+
+    const handleMessage = (event) => {
+      console.log('[DataChannel] Mensagem recebida:', event.data);
+      const msgId = Date.now().toString();
+      const newMsg = {
+        id: msgId,
+        text: event.data,
+        sender: 'REMOTO',
+        timer: 60
+      };
+
+      setMessages((prev) => [...prev, newMsg]);
+
+      // Timer de autodestruição
+      const msgTimer = setInterval(() => {
+        setMessages((prev) => {
+          const target = prev.find(m => m.id === msgId);
+          if (target && target.timer <= 1) {
+            clearInterval(msgTimer);
+            return prev.filter(m => m.id !== msgId);
+          }
+          return prev.map(m => m.id === msgId ? { ...m, timer: m.timer - 1 } : m);
+        });
+      }, 1000);
+    };
+
+    dataChannel.addEventListener('message', handleMessage);
+    return () => dataChannel.removeEventListener('message', handleMessage);
+  }, [dataChannel]);
+
   // Enviar mensagem efêmera (Dura 60 segundos na memória)
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!inputText.trim()) return;
 
+    const msgText = inputText.trim().toUpperCase();
+
+    // Enviar via DataChannel se disponível
+    if (dataChannel && dataChannel.readyState === 'open') {
+      try {
+        dataChannel.send(msgText);
+        console.log('[DataChannel] Mensagem enviada:', msgText);
+      } catch (err) {
+        console.error('[DataChannel] Erro ao enviar:', err);
+      }
+    } else {
+      console.warn('[DataChannel] Canal não está aberto. Estado:', dataChannel?.readyState);
+    }
+
+    // Exibir mensagem localmente
     const msgId = Date.now().toString();
     const newMsg = {
       id: msgId,
-      text: inputText.trim().toUpperCase(),
+      text: msgText,
       sender: 'VOCÊ',
       timer: 60 // 60 segundos de vida
     };
@@ -104,6 +162,14 @@ export default function Radio({ activeCall, onDisconnect }) {
 
   return (
     <div className="flex flex-col justify-between h-full space-y-4">
+      
+      {/* Elemento de áudio para reproduzir stream remoto (invisível) */}
+      <audio 
+        ref={audioRef} 
+        autoPlay 
+        playsInline
+        style={{ display: 'none' }}
+      />
       
       {/* Indicador de Canal Ativo */}
       <div className="border border-radioactiveOrange bg-terminalGray/30 p-3 rounded shadow-orange-glow flex justify-between items-center">
