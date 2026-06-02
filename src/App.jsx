@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Terminal from './components/Terminal';
 import Agenda from './components/Agenda';
 import Radio from './components/Radio';

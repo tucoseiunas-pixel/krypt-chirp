@@ -45,7 +45,21 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
     if (remoteStream && audioRef.current) {
       console.log('[Radio] Conectando remoteStream ao elemento audio');
       audioRef.current.srcObject = remoteStream;
-      audioRef.current.play().catch(err => console.error('[Audio] Erro ao reproduzir:', err));
+      
+      // Tentar reproduzir com fallback
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .catch(err => {
+            console.warn('[Audio] Autoplay bloqueado, requerindo interação:', err.message);
+            // Fallback: tentar tocar novamente após um click do usuário
+            const unmuteAudio = () => {
+              audioRef.current?.play().catch(e => console.error('[Audio] Erro após unmute:', e.message));
+              document.removeEventListener('click', unmuteAudio);
+            };
+            document.addEventListener('click', unmuteAudio);
+          });
+      }
     }
   }, [remoteStream]);
 
@@ -59,7 +73,8 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
         if (prev <= 1) {
           clearInterval(callTimer);
           playNextelChirp(); // Toca o bip para sinalizar encerramento
-          onDisconnect(); // Derruba a chamada
+          // Usar setTimeout para evitar setState durante render
+          setTimeout(() => onDisconnect(), 0);
           return 0;
         }
         return prev - 1;

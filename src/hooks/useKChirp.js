@@ -11,6 +11,10 @@ export default function useKChirp(userKey) {
   const dataChannelRef = useRef(null);
   const pollingRef = useRef(null);
 
+  // Detectar ambiente: localhost = dev, vercel.app = prod
+  const isProduction = typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
+  const API_BASE = isProduction ? 'https://krypt-chirp.vercel.app' : '';
+
   const rtcConfig = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -51,7 +55,7 @@ export default function useKChirp(userKey) {
     for (const contact of agenda) {
       try {
         const tunnelId = await getTunnelId(userKey, contact.key);
-        const res = await fetch(`/api/signal?userKey=${tunnelId}`);
+        const res = await fetch(`${API_BASE}/api/signal?userKey=${tunnelId}`);
         const data = await res.json();
 
         // Se houver um 'call' vindo especificamente desse contato no túnel secreto
@@ -106,7 +110,7 @@ export default function useKChirp(userKey) {
         
         // Guardar tunnel ID para poder enviar candidates depois
         if (peerConnection.current && peerConnection.current.__tunnelId) {
-          fetch('/api/signal', {
+          fetch(`${API_BASE}/api/signal`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -178,7 +182,7 @@ export default function useKChirp(userKey) {
       console.log('[WebRTC] Descrição local definida');
 
       // Publica a oferta no endereço do túnel
-      await fetch('/api/signal', {
+      await fetch(`${API_BASE}/api/signal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -192,7 +196,7 @@ export default function useKChirp(userKey) {
 
       // Polling de resposta no túnel
       const answerWait = setInterval(async () => {
-        const res = await fetch(`/api/signal?userKey=${tunnelId}`);
+        const res = await fetch(`${API_BASE}/api/signal?userKey=${tunnelId}`);
         const data = await res.json();
         if (data.action === 'connected' && data.sdp) {
           console.log('[K-CHIRP] Resposta recebida! Conectando ao peer...');
@@ -260,7 +264,7 @@ export default function useKChirp(userKey) {
       console.log('[WebRTC] Descrição local definida');
 
       // Envia resposta para o túnel
-      await fetch('/api/signal', {
+      await fetch(`${API_BASE}/api/signal`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -333,10 +337,13 @@ export default function useKChirp(userKey) {
   const cleanup = () => {
     if (peerConnection.current) peerConnection.current.close();
     if (localStream.current) localStream.current.getTracks().forEach(t => t.stop());
-    setConnectionState('DISCONNECTED');
-    setRemoteStream(null);
-    setDataChannel(null);
-    setIncomingCall(null);
+    // Usar setTimeout(..., 0) para evitar setState durante render
+    setTimeout(() => {
+      setConnectionState('DISCONNECTED');
+      setRemoteStream(null);
+      setDataChannel(null);
+      setIncomingCall(null);
+    }, 0);
   };
 
   return {
