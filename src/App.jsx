@@ -34,7 +34,8 @@ const {
   cleanup,       
   incomingCall,
   remoteStream,
-  dataChannel
+  dataChannel,
+  dataChannelRef
 } = useKChirp(userKey);
 
 
@@ -175,6 +176,7 @@ return (
           onDisconnect={handleDisconnect}
           remoteStream={remoteStream}
           dataChannel={dataChannel}
+          dataChannelRef={dataChannelRef}
         />
       )}
     </main>

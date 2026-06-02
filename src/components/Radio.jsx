@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Radio as RadioIcon, Mic, MicOff, MessageSquare, Send, Power } from 'lucide-react';
 
-export default function Radio({ activeCall, onDisconnect, remoteStream, dataChannel }) {
+export default function Radio({ activeCall, onDisconnect, remoteStream, dataChannel, dataChannelRef }) {
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [timeLeft, setTimeLeft] = useState(90); // Limite de 90 segundos de chamada
   const [messages, setMessages] = useState([]);
@@ -76,7 +76,8 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
 
   // Escutar mensagens recebidas pelo DataChannel
   useEffect(() => {
-    if (!dataChannel) return;
+    const dc = dataChannel || (dataChannelRef?.current);
+    if (!dc) return;
 
     const handleMessage = (event) => {
       console.log('[DataChannel] Mensagem recebida:', event.data);
@@ -103,9 +104,9 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
       }, 1000);
     };
 
-    dataChannel.addEventListener('message', handleMessage);
-    return () => dataChannel.removeEventListener('message', handleMessage);
-  }, [dataChannel]);
+    dc.addEventListener('message', handleMessage);
+    return () => dc.removeEventListener('message', handleMessage);
+  }, [dataChannel, dataChannelRef]);
 
   // Enviar mensagem efêmera (Dura 60 segundos na memória)
   const handleSendMessage = (e) => {
@@ -113,26 +114,59 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
     if (!inputText.trim()) return;
 
     const msgText = inputText.trim().toUpperCase();
+    let sent = false;
 
-    // Enviar via DataChannel se disponível
-    if (dataChannel && dataChannel.readyState === 'open') {
-      try {
-        dataChannel.send(msgText);
-        console.log('[DataChannel] Mensagem enviada:', msgText);
-      } catch (err) {
-        console.error('[DataChannel] Erro ao enviar:', err);
+    // Usar dataChannelRef se disponível (mais confiável)
+    const dc = dataChannel || (dataChannelRef?.current);
+    
+    if (dc) {
+      console.log('[Radio] DataChannel disponível. readyState:', dc.readyState);
+      
+      if (dc.readyState === 'open') {
+        try {
+          dc.send(msgText);
+          console.log('[DataChannel] Mensagem enviada com sucesso:', msgText);
+          sent = true;
+        } catch (err) {
+          console.error('[DataChannel] Erro ao enviar:', err);
+        }
+      } else {
+        console.warn('[DataChannel] Canal não está aberto. Estado:', dc.readyState);
+        
+        // Retry automático a cada 500ms por até 5 segundos
+        let retries = 0;
+        const retryInterval = setInterval(() => {
+          if (dc.readyState === 'open' && !sent) {
+            try {
+              dc.send(msgText);
+              console.log('[DataChannel] Mensagem reenviada com sucesso (retry #' + retries + ')');
+              sent = true;
+              clearInterval(retryInterval);
+            } catch (err) {
+              console.error('[DataChannel] Erro no retry:', err);
+            }
+          }
+          retries++;
+          if (retries > 10) { // 10 * 500ms = 5s
+            clearInterval(retryInterval);
+            if (!sent) {
+              console.warn('[DataChannel] Falha permanente - canal não abriu a tempo');
+            }
+          }
+        }, 500);
       }
     } else {
-      console.warn('[DataChannel] Canal não está aberto. Estado:', dataChannel?.readyState);
+      console.warn('[Radio] DataChannel é null/undefined');
     }
 
-    // Exibir mensagem localmente
+    // Exibir mensagem localmente MESMO SE NÃO FOI ENVIADA (para feedback do usuário)
     const msgId = Date.now().toString();
     const newMsg = {
       id: msgId,
       text: msgText,
       sender: 'VOCÊ',
-      timer: 60 // 60 segundos de vida
+      timer: 60,
+      sent: sent
     };
 
     setMessages((prev) => [...prev, newMsg]);

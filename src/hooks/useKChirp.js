@@ -14,7 +14,20 @@ export default function useKChirp(userKey) {
   const rtcConfig = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      // Servidor TURN público (fallback para NAT)
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ]
   };
 
@@ -68,6 +81,13 @@ export default function useKChirp(userKey) {
 
   const createPeerConnection = (targetKey) => {
     const pc = new RTCPeerConnection(rtcConfig);
+    
+    // IMPORTANTE: Definir ondatachannel ANTES de qualquer operação
+    pc.ondatachannel = (event) => {
+      console.log('[WebRTC] DataChannel recebido:', event.channel.label);
+      setupDataChannel(event.channel);
+    };
+    
     pc.ontrack = (e) => {
       console.log('[WebRTC] Track recebido:', e.track.kind);
       setRemoteStream(e.streams[0]);
@@ -162,10 +182,6 @@ export default function useKChirp(userKey) {
 
       const pc = createPeerConnection(incomingCall.senderKey);
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
-      pc.ondatachannel = (e) => {
-        console.log('[DataChannel] Canal de dados recebido');
-        setupDataChannel(e.channel);
-      };
       console.log('[WebRTC] Tracks adicionados ao peer connection');
 
       console.log('[WebRTC] Definindo descrição remota da oferta recebida');
@@ -196,15 +212,18 @@ export default function useKChirp(userKey) {
   };
 
   const setupDataChannel = (dc) => {
-    console.log('[DataChannel] Configurando canal:', dc.label);
+    console.log('[DataChannel] Configurando canal:', dc.label, 'Estado:', dc.readyState);
+    
+    // Guardar referência IMEDIATAMENTE
+    dataChannelRef.current = dc;
     
     dc.onopen = () => {
-      console.log('[DataChannel] Canal aberto!');
+      console.log('[DataChannel] Canal ABERTO! readyState:', dc.readyState);
       setDataChannel(dc);
     };
     
     dc.onclose = () => {
-      console.log('[DataChannel] Canal fechado');
+      console.log('[DataChannel] Canal FECHADO');
       setDataChannel(null);
     };
     
@@ -214,10 +233,13 @@ export default function useKChirp(userKey) {
     
     dc.onmessage = (e) => {
       console.log('[DataChannel] Mensagem recebida:', e.data);
-      // Aqui você pode processar mensagens recebidas se necessário
     };
     
-    dataChannelRef.current = dc;
+    // Se já estiver open, disparar manualmente
+    if (dc.readyState === 'open') {
+      console.log('[DataChannel] Canal já está OPEN! Atualizando state...');
+      setDataChannel(dc);
+    }
   };
 
   const cleanup = () => {
@@ -234,6 +256,7 @@ export default function useKChirp(userKey) {
     remoteStream,
     localStream: localStream.current,
     dataChannel,
+    dataChannelRef,
     incomingCall,
     startCall,
     acceptCall,
