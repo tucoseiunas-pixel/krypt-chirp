@@ -132,23 +132,10 @@ export default function useKChirp(userKey) {
       
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         console.log('[CONNECTION] Conexão ICE estabelecida!');
-        setConnectionState('CONNECTED');
-        
-        // WORKAROUND: Forçar abertura de DataChannel após ICE "connected"
+        // Usar setTimeout para evitar setState durante render (evita React warning)
         setTimeout(() => {
-          const dcRef = dataChannelRef.current;
-          if (dcRef && dcRef.readyState !== 'open') {
-            console.log('[DataChannel] Forçando onopen via fallback. Estado atual:', dcRef.readyState);
-            if (dcRef.readyState === 'connecting' || dcRef.readyState === 'open') {
-              // Disparar evento manualmente se não foi disparado
-              if (!dcRef.__onOpenFired) {
-                dcRef.__onOpenFired = true;
-                console.log('[DataChannel] Fallback onopen executado');
-                setDataChannel(dcRef);
-              }
-            }
-          }
-        }, 1000);
+          setConnectionState('CONNECTED');
+        }, 0);
       }
       
       if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
@@ -294,24 +281,35 @@ export default function useKChirp(userKey) {
   const setupDataChannel = (dc) => {
     console.log('[DataChannel] Configurando canal:', dc.label, 'Estado:', dc.readyState);
     
-    // Guardar referência IMEDIATAMENTE
-    dataChannelRef.current = dc;
+    // Guardar referência IMEDIATAMENTE e proteger de duplas configurações
+    if (dataChannelRef.current?.label === dc.label && dataChannelRef.current.__setupDone) {
+      console.log('[DataChannel] Canal já foi configurado, pulando setup duplicado');
+      return;
+    }
     
-    // Se já estiver open, disparar manualmente
+    dataChannelRef.current = dc;
+    dc.__setupDone = true; // Flag para evitar reconfiguração
+    
+    // Se já estiver open, disparar manualmente (evitar race condition)
     if (dc.readyState === 'open') {
       console.log('[DataChannel] Canal já OPEN! Atualizando state...');
-      setDataChannel(dc);
+      setTimeout(() => setDataChannel(dc), 0);
+      dc.__onOpenFired = true;
     }
     
     dc.onopen = () => {
-      console.log('[DataChannel] evento ONOPEN disparado! readyState:', dc.readyState);
-      setDataChannel(dc);
-      dc.__onOpenFired = true;
+      if (!dc.__onOpenFired) {
+        console.log('[DataChannel] evento ONOPEN disparado! readyState:', dc.readyState);
+        // Usar setTimeout para evitar setState durante eventos de WebRTC
+        setTimeout(() => setDataChannel(dc), 0);
+        dc.__onOpenFired = true;
+      }
     };
     
     dc.onclose = () => {
       console.log('[DataChannel] Canal FECHADO');
-      setDataChannel(null);
+      // Usar setTimeout para evitar setState durante eventos
+      setTimeout(() => setDataChannel(null), 0);
     };
     
     dc.onerror = (error) => {
@@ -327,7 +325,7 @@ export default function useKChirp(userKey) {
       if (!dc.__onOpenFired && (dc.readyState === 'open' || dc.readyState === 'connecting')) {
         console.log('[DataChannel] Forçando onopen (não disparou). readyState:', dc.readyState);
         dc.__onOpenFired = true;
-        setDataChannel(dc);
+        setTimeout(() => setDataChannel(dc), 0);
       }
     }, 3000);
   };

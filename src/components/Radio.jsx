@@ -210,7 +210,9 @@ export default function Radio({ activeCall, onDisconnect, remoteStream, dataChan
       <audio 
         ref={audioRef} 
         autoPlay 
+        muted={false}
         playsInline
+        controls={false}
         style={{ display: 'none' }}
       />
       
