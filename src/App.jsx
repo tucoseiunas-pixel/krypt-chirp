@@ -30,7 +30,7 @@ setUserKey(savedKey);
 const { 
   connectionState, 
   startCall,     
-  answerCall, 
+  acceptCall, 
   cleanup,       
   incomingCall 
 } = useKChirp(userKey);
@@ -52,19 +52,19 @@ useEffect(() => {
     const contatos = agendaSalva ? JSON.parse(agendaSalva) : [];
     
     // 2. Verificar se a chave de origem (quem está ligando) está autorizada na agenda
-    const contatoAutorizado = contatos.find(c => c.key === incomingCall.from);
+    const contatoAutorizado = contatos.find(c => c.key === incomingCall.senderKey);
 
     if (contatoAutorizado) {
       console.log(`[P2P] Chamada autorizada detectada de: ${contatoAutorizado.name}`);
-      setActiveCall({ target: incomingCall.from, type: 'incoming' });
+      setActiveCall({ target: incomingCall.senderKey, type: 'incoming' });
       setCurrentTab('radio');
       // 3. Responder ao sinal WebRTC (Envia o SDP Answer de volta)
-      answerCall();
+      acceptCall();
     } else {
-      console.warn(`[P2P] Chamada ignorada: Chave ${incomingCall.from} não consta na agenda local.`);
+      console.warn(`[P2P] Chamada ignorada: Chave ${incomingCall.senderKey} não consta na agenda local.`);
     }
   }
-}, [incomingCall, connectionState, answerCall]);
+}, [incomingCall, connectionState, acceptCall]);
 
 const handleAcceptTerms = () => {
 localStorage.setItem('kchirp_terms_accepted', 'true');
@@ -73,8 +73,6 @@ setAcceptedTerms(true);
 
 const handleStartCall = async (target) => {
   try {
-    if (typeof playNextelChirp === 'function') playNextelChirp();
-    
     await startCall(target); 
     
     setCurrentTab('radio');
@@ -90,7 +88,7 @@ const handleStartCall = async (target) => {
 };
 
 const handleDisconnect = () => {
-disconnect();
+cleanup();
 setActiveCall(null);
 setCurrentTab('terminal');
 };

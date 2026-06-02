@@ -42,7 +42,7 @@ export default function useKChirp(userKey) {
         const data = await res.json();
 
         // Se houver um 'call' vindo especificamente desse contato no túnel secreto
-        if (data.sdp && data.action === 'call' && data.senderKey === contact.key) {
+        if (data.sdp && data.action === 'incoming' && data.senderKey === contact.key) {
           setIncomingCall({
             senderKey: contact.key,
             senderName: contact.name,
