@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Terminal from './components/Terminal';
 import Agenda from './components/Agenda';
 import Radio from './components/Radio';
@@ -6,12 +6,11 @@ import useKChirp from './hooks/useKChirp';
 
 export default function App() {
 const [acceptedTerms, setAcceptedTerms] = useState(false);
-const [currentTab, setCurrentTab] = useState('terminal'); // 'terminal', 'agenda', 'radio'
-const [activeCall, setActiveCall] = useState(null); // Armazena dados se houver chamada ativa
+const [currentTab, setCurrentTab] = useState('terminal'); 
+const [activeCall, setActiveCall] = useState(null); 
 const [userKey, setUserKey] = useState('');
-const [targetKey, setTargetKey] = useState(''); // Estado para o endereço de destino
+const [targetKey, setTargetKey] = useState(''); 
 
-// Simula a geração do SHA-256 do hardware no primeiro acesso
 useEffect(() => {
 const terms = localStorage.getItem('kchirp_terms_accepted');
 if (terms === 'true') {
@@ -28,10 +27,18 @@ localStorage.setItem('kchirp_device_key', savedKey);
 setUserKey(savedKey);
 }, []);
 
-// Inicializa o nosso hook de P2P WebRTC conectando ao endereço local
-const { connectionState, makeCall, answerCall, disconnect, incomingCall  } = useKChirp(userKey);
+const { 
+  connectionState, 
+  startCall,     
+  acceptCall, 
+  cleanup,       
+  incomingCall,
+  remoteStream,
+  dataChannel,
+  dataChannelRef
+} = useKChirp(userKey);
 
-// Monitora o estado da conexão para ajustar a navegação de forma reativa
+
 useEffect(() => {
 if (connectionState === 'CONNECTED' && currentTab !== 'radio') {
 setCurrentTab('radio');
@@ -41,7 +48,6 @@ setCurrentTab('terminal');
 }
 }, [connectionState, currentTab]);
 
-// LOGICA DE RECEPÇÃO: Escuta sinais de chamada e valida contra a agenda local
 useEffect(() => {
   if (incomingCall && connectionState === 'DISCONNECTED') {
     // 1. Recuperar agenda local para verificação de segurança (P2P White-list)
@@ -49,41 +55,43 @@ useEffect(() => {
     const contatos = agendaSalva ? JSON.parse(agendaSalva) : [];
     
     // 2. Verificar se a chave de origem (quem está ligando) está autorizada na agenda
-    const contatoAutorizado = contatos.find(c => c.key === incomingCall.from);
+    const contatoAutorizado = contatos.find(c => c.key === incomingCall.senderKey);
 
     if (contatoAutorizado) {
       console.log(`[P2P] Chamada autorizada detectada de: ${contatoAutorizado.name}`);
-      setActiveCall({ target: incomingCall.from, type: 'incoming' });
+      setActiveCall({ target: incomingCall.senderKey, type: 'incoming' });
       setCurrentTab('radio');
       // 3. Responder ao sinal WebRTC (Envia o SDP Answer de volta)
-      answerCall();
+      acceptCall();
     } else {
-      console.warn(`[P2P] Chamada ignorada: Chave ${incomingCall.from} não consta na agenda local.`);
+      console.warn(`[P2P] Chamada ignorada: Chave ${incomingCall.senderKey} não consta na agenda local.`);
     }
   }
-}, [incomingCall, connectionState, answerCall]);
+}, [incomingCall, connectionState, acceptCall]);
 
 const handleAcceptTerms = () => {
 localStorage.setItem('kchirp_terms_accepted', 'true');
 setAcceptedTerms(true);
 };
 
-const handleStartCall = async (targetKey) => {
-setActiveCall({ target: targetKey, type: 'outgoing' });
-setCurrentTab('radio');
-try {
-// Dispara a oferta WebRTC. Em produção, isso seria enviado via fetch para api/signal.js
-await makeCall(targetKey, (incomingMessage) => {
-console.log("Mensagem de texto P2P recebida no canal de dados:", incomingMessage);
-});
-} catch (err) {
-console.error("Erro ao iniciar chamada:", err);
-handleDisconnect();
-}
+const handleStartCall = async (target) => {
+  try {
+    await startCall(target); 
+    
+    setCurrentTab('radio');
+    
+    setActiveCall({
+      type: 'outgoing',
+      targetKey: target,
+      startTime: Date.now()
+    });
+  } catch (err) {
+    console.error("Erro ao iniciar chamada:", err);
+  }
 };
 
 const handleDisconnect = () => {
-disconnect();
+cleanup();
 setActiveCall(null);
 setCurrentTab('terminal');
 };
@@ -157,15 +165,18 @@ return (
 {currentTab === 'agenda' && (
   <Agenda 
     onSelectContact={(key) => {
-      setTargetKey(key);          // Define a chave do destino globalmente
-      handleStartCall(key);       // Dispara a chamada WebRTC automaticamente
+      setTargetKey(key);          
+      handleStartCall(key);       
     }} 
   />
 )}
       {currentTab === 'radio' && (
         <Radio 
           activeCall={activeCall} 
-          onDisconnect={handleDisconnect} 
+          onDisconnect={handleDisconnect}
+          remoteStream={remoteStream}
+          dataChannel={dataChannel}
+          dataChannelRef={dataChannelRef}
         />
       )}
     </main>

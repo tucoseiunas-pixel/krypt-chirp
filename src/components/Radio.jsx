@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Radio as RadioIcon, Mic, MicOff, MessageSquare, Send, Power } from 'lucide-react';
 
-export default function Radio({ activeCall, onDisconnect }) {
+export default function Radio({ activeCall, onDisconnect, remoteStream, dataChannel, dataChannelRef }) {
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [timeLeft, setTimeLeft] = useState(90); // Limite de 90 segundos de chamada
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef(null);
+  const audioRef = useRef(null);
 
   // Sintetizador para simular o Chirp clássico do Nextel via Web Audio API
   const playNextelChirp = () => {
@@ -39,6 +40,29 @@ export default function Radio({ activeCall, onDisconnect }) {
     }
   };
 
+  // Reproduzir áudio remoto quando receber stream
+  useEffect(() => {
+    if (remoteStream && audioRef.current) {
+      console.log('[Radio] Conectando remoteStream ao elemento audio');
+      audioRef.current.srcObject = remoteStream;
+      
+      // Tentar reproduzir com fallback
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .catch(err => {
+            console.warn('[Audio] Autoplay bloqueado, requerindo interação:', err.message);
+            // Fallback: tentar tocar novamente após um click do usuário
+            const unmuteAudio = () => {
+              audioRef.current?.play().catch(e => console.error('[Audio] Erro após unmute:', e.message));
+              document.removeEventListener('click', unmuteAudio);
+            };
+            document.addEventListener('click', unmuteAudio);
+          });
+      }
+    }
+  }, [remoteStream]);
+
   // Efeito para tocar o Chirp no início da chamada (se for saída ou entrada)
   useEffect(() => {
     playNextelChirp();
@@ -49,7 +73,8 @@ export default function Radio({ activeCall, onDisconnect }) {
         if (prev <= 1) {
           clearInterval(callTimer);
           playNextelChirp(); // Toca o bip para sinalizar encerramento
-          onDisconnect(); // Derruba a chamada
+          // Usar setTimeout para evitar setState durante render
+          setTimeout(() => onDisconnect(), 0);
           return 0;
         }
         return prev - 1;
@@ -64,17 +89,108 @@ export default function Radio({ activeCall, onDisconnect }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Escutar mensagens recebidas pelo DataChannel
+  useEffect(() => {
+    const dc = dataChannel || (dataChannelRef?.current);
+    if (!dc) return;
+
+    const handleMessage = (event) => {
+      console.log('[DataChannel] Mensagem recebida:', event.data);
+      const msgId = Date.now().toString();
+      const newMsg = {
+        id: msgId,
+        text: event.data,
+        sender: 'REMOTO',
+        timer: 60
+      };
+
+      setMessages((prev) => [...prev, newMsg]);
+
+      // Timer de autodestruição
+      const msgTimer = setInterval(() => {
+        setMessages((prev) => {
+          const target = prev.find(m => m.id === msgId);
+          if (target && target.timer <= 1) {
+            clearInterval(msgTimer);
+            return prev.filter(m => m.id !== msgId);
+          }
+          return prev.map(m => m.id === msgId ? { ...m, timer: m.timer - 1 } : m);
+        });
+      }, 1000);
+    };
+
+    dc.addEventListener('message', handleMessage);
+    return () => dc.removeEventListener('message', handleMessage);
+  }, [dataChannel, dataChannelRef]);
+
   // Enviar mensagem efêmera (Dura 60 segundos na memória)
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!inputText.trim()) return;
 
+    const msgText = inputText.trim().toUpperCase();
+    let sent = false;
+
+    // Usar dataChannelRef se disponível (mais confiável)
+    const dc = dataChannel || (dataChannelRef?.current);
+    
+    if (dc) {
+      console.log('[Radio] DataChannel disponível. readyState:', dc.readyState);
+      
+      if (dc.readyState === 'open') {
+        try {
+          dc.send(msgText);
+          console.log('[DataChannel] Mensagem enviada com sucesso:', msgText);
+          sent = true;
+        } catch (err) {
+          console.error('[DataChannel] Erro ao enviar:', err);
+        }
+      } else {
+        console.warn('[DataChannel] Canal não está aberto. Estado:', dc.readyState);
+        console.log('[DataChannel] Iniciando retry automático a cada 300ms...');
+        
+        // Retry com backoff exponencial
+        let retries = 0;
+        const retryInterval = setInterval(() => {
+          if (sent) {
+            clearInterval(retryInterval);
+            return;
+          }
+          
+          console.log('[DataChannel] Tentativa #' + (retries + 1), 'readyState:', dc.readyState);
+          
+          if (dc.readyState === 'open' && !sent) {
+            try {
+              dc.send(msgText);
+              console.log('[DataChannel] Mensagem enviada (retry #' + retries + ')');
+              sent = true;
+              clearInterval(retryInterval);
+            } catch (err) {
+              console.error('[DataChannel] Erro no retry:', err);
+            }
+          }
+          
+          retries++;
+          
+          // Continuar tentando indefinidamente, mas log reduzido após 20 tentativas
+          if (retries > 100) { // ~30 segundos
+            console.error('[DataChannel] Falha - canal não abriu após 100 tentativas. readyState final:', dc.readyState);
+            clearInterval(retryInterval);
+          }
+        }, 300);
+      }
+    } else {
+      console.warn('[Radio] DataChannel é null/undefined');
+    }
+
+    // Exibir mensagem localmente MESMO SE NÃO FOI ENVIADA (para feedback do usuário)
     const msgId = Date.now().toString();
     const newMsg = {
       id: msgId,
-      text: inputText.trim().toUpperCase(),
+      text: msgText,
       sender: 'VOCÊ',
-      timer: 60 // 60 segundos de vida
+      timer: 60,
+      sent: sent
     };
 
     setMessages((prev) => [...prev, newMsg]);
@@ -105,6 +221,16 @@ export default function Radio({ activeCall, onDisconnect }) {
   return (
     <div className="flex flex-col justify-between h-full space-y-4">
       
+      {/* Elemento de áudio para reproduzir stream remoto (invisível) */}
+      <audio 
+        ref={audioRef} 
+        autoPlay 
+        muted={false}
+        playsInline
+        controls={false}
+        style={{ display: 'none' }}
+      />
+      
       {/* Indicador de Canal Ativo */}
       <div className="border border-radioactiveOrange bg-terminalGray/30 p-3 rounded shadow-orange-glow flex justify-between items-center">
         <div className="flex items-center gap-2">
@@ -123,6 +249,19 @@ export default function Radio({ activeCall, onDisconnect }) {
         >
           <Power className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* Status do DataChannel */}
+      <div className="border border-acidGreen/50 bg-acidGreen/10 p-2 rounded text-[10px] text-acidGreen">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${(dataChannel?.readyState === 'open' || dataChannelRef?.current?.readyState === 'open') ? 'bg-acidGreen animate-pulse' : 'bg-radioactiveOrange animate-pulse'}`} />
+          <span className="font-mono">
+            {(dataChannel?.readyState === 'open' || dataChannelRef?.current?.readyState === 'open') 
+              ? '✓ TEXTO OK'
+              : `⏳ TEXTO (${(dataChannelRef?.current?.readyState || 'aguardando')})`
+            }
+          </span>
+        </div>
       </div>
 
       {/* Barra de Tempo de Linha (90 segundos de limite) */}
